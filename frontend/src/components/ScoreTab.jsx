@@ -77,18 +77,29 @@ export function ScoreTab({ merchant, psychometricResponses, onCompute }) {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [loadedFromDb, setLoadedFromDb] = useState(false);
 
   useEffect(() => {
     if (!merchant?.merchant_id) return;
+    setResult(null);
+    setLoadedFromDb(false);
+    setLoading(true);
+
     api
       .getLatestScore(merchant.merchant_id)
       .then((data) => {
-        if (data?.history?.length > 0) {
-          const last = data.history[0];
-          if (last.full_result) setResult(last.full_result);
+        if (data && data.final_score) {
+          // Score exists in DB — load it directly, no form needed
+          let mlData = null;
+          api
+            .mlScore(merchant.merchant_id)
+            .then((ml) => setResult({ ...data, ml }))
+            .catch(() => setResult(data));
+          setLoadedFromDb(true);
         }
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setLoading(false));
   }, [merchant?.merchant_id]);
 
   const handleCompute = async () => {
@@ -101,6 +112,7 @@ export function ScoreTab({ merchant, psychometricResponses, onCompute }) {
         mlData = await api.mlScore(merchant.merchant_id);
       } catch (_) {}
       setResult({ ...fusionData, ml: mlData });
+      setLoadedFromDb(false);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -132,16 +144,32 @@ export function ScoreTab({ merchant, psychometricResponses, onCompute }) {
         </div>
       )}
 
-      <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
+      <div
+        style={{
+          display: "flex",
+          gap: 12,
+          marginBottom: 16,
+          alignItems: "center",
+        }}
+      >
         <button
           className="btn btn-primary"
           onClick={handleCompute}
           disabled={loading}
         >
           <Zap size={15} />
-          {loading ? "Computing..." : "Compute Full Trust Score ▶"}
+          {loading
+            ? "Computing..."
+            : loadedFromDb
+              ? "Recompute Score ↺"
+              : "Compute Full Trust Score ▶"}
         </button>
-        {result && <span className="badge badge-green">Score computed</span>}
+        {loadedFromDb && (
+          <span className="badge badge-green">Loaded from database</span>
+        )}
+        {result && !loadedFromDb && (
+          <span className="badge badge-green">Score computed</span>
+        )}
       </div>
 
       {loading && (
