@@ -26,7 +26,7 @@ export default function App() {
   const [selectedId, setSelectedId] = useState(null);
   const [selectedMerchant, setSelectedMerchant] = useState(null);
   const [questions, setQuestions] = useState([]);
-  const [activeTab, setActiveTab] = useState("psychometric");
+  const [activeTab, setActiveTab] = useState("score");
   const [psychResponses, setPsychResponses] = useState(null);
   const [psychSubmitted, setPsychSubmitted] = useState(false);
   const [error, setError] = useState(null);
@@ -49,6 +49,19 @@ export default function App() {
         setQuestions(qs);
       })
       .catch(() => {});
+
+    // If score exists go to score tab, otherwise psychometric
+    api
+      .getLatestScore(selectedId)
+      .then((data) => {
+        if (data && data.final_score) {
+          setActiveTab("score");
+        } else {
+          setActiveTab("psychometric");
+        }
+      })
+      .catch(() => setActiveTab("psychometric"));
+
     setPsychResponses(null);
     setPsychSubmitted(false);
   }, [selectedId]);
@@ -108,7 +121,6 @@ export default function App() {
         selectedId={selectedId}
         onSelect={(id) => {
           setSelectedId(id);
-          setActiveTab("psychometric");
         }}
       />
 

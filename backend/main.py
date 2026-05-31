@@ -1,5 +1,4 @@
 import json
-import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,9 +7,15 @@ from typing import Dict, Optional, List
 import networkx as nx
 
 from db import (
-    init_db, seed_merchants, get_all_merchants, get_all_merchants_full,
-    get_merchant_full, save_trust_score, save_psychometric,
-    get_score_history, get_vouch_neighbors, get_graph_data_for_d3
+    init_db,
+    get_all_merchants,
+    get_all_merchants_full,
+    get_merchant_full,
+    save_trust_score,
+    save_psychometric,
+    get_score_history,
+    get_vouch_neighbors,
+    get_graph_data_for_d3,
 )
 from engines.social_graph import build_graph_from_edges, score_merchant_social
 from engines.psychometric import run_psychometric_assessment, get_questions
@@ -20,8 +25,6 @@ from engines.inference import predict
 
 # ── Startup ───────────────────────────────────────────────────────────────────
 
-DATA_PATH = os.path.join(os.path.dirname(__file__), "data", "seed_merchants.json")
-
 GRAPH: nx.DiGraph = nx.DiGraph()
 MERCHANT_CACHE: Dict[str, dict] = {}
 
@@ -30,9 +33,6 @@ MERCHANT_CACHE: Dict[str, dict] = {}
 async def lifespan(app: FastAPI):
     global GRAPH, MERCHANT_CACHE
     await init_db()
-    with open(DATA_PATH, "r", encoding="utf-8") as f:
-        seed_data = json.load(f)
-    await seed_merchants(seed_data)
 
     # Load all merchants into in-memory cache for graph + scoring
     merchants = await get_all_merchants_full()
@@ -44,6 +44,7 @@ async def lifespan(app: FastAPI):
     print(f"✅ Graph: {GRAPH.number_of_nodes()} nodes, {GRAPH.number_of_edges()} edges")
     yield
     from db import close_pool
+
     await close_pool()
 
 
@@ -61,6 +62,7 @@ app.add_middleware(
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
 
+
 class ScoreRequest(BaseModel):
     merchant_id: str
     psychometric_responses: Optional[Dict[str, str]] = None
@@ -68,6 +70,7 @@ class ScoreRequest(BaseModel):
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
+
 
 @app.get("/")
 def root():
@@ -170,8 +173,12 @@ async def compute_full_score(merchant_id: str, body: ScoreRequest):
     # Attach gamification
     final["xp_earned"] = psychometric_result.get("xp_earned", 0)
     final["badges_unlocked"] = psychometric_result.get("badges_unlocked", [])
-    final["hallucination_corrections"] = psychometric_result.get("hallucination_corrections", [])
-    final["deterministic_baseline"] = psychometric_result.get("deterministic_baseline", {})
+    final["hallucination_corrections"] = psychometric_result.get(
+        "hallucination_corrections", []
+    )
+    final["deterministic_baseline"] = psychometric_result.get(
+        "deterministic_baseline", {}
+    )
 
     # Persist to PostgreSQL
     await save_trust_score(merchant_id, final)
@@ -221,7 +228,13 @@ def ml_score(merchant_id: str):
     try:
         return predict(merchant)
     except Exception as e:
-        return {"repayment_risk": "unknown", "confidence": 0, "anomaly_flag": False, "probabilities": {}, "error": str(e)}
+        return {
+            "repayment_risk": "unknown",
+            "confidence": 0,
+            "anomaly_flag": False,
+            "probabilities": {},
+            "error": str(e),
+        }
 
 
 @app.get("/graph/stats")
@@ -251,6 +264,7 @@ def ml_score_merchant(merchant: dict):
     result = predict(merchant)
     return result
 
+
 @app.get("/ml-score/{merchant_id}")
 def ml_score_by_id(merchant_id: str):
     merchant = MERCHANT_CACHE.get(merchant_id)
@@ -258,9 +272,65 @@ def ml_score_by_id(merchant_id: str):
         raise HTTPException(404, "Merchant not found")
     return predict(merchant)
 
+
 @app.get("/score/{merchant_id}/latest")
 async def get_latest_score(merchant_id: str):
     history = await get_score_history(merchant_id, limit=1)
     if not history:
         return None
-    return history[0]["full_result"] if "full_result" in history[0] else None
+    result = history[0].get("full_result")
+    if result is None:
+        return None
+    if isinstance(result, str):
+        import json
+
+        return json.loads(result)
+    return dict(result)
+
+
+@app.get("/merchants/{merchant_id}/transactions")
+async def merchant_transactions(
+    merchant_id: str,
+    limit: int = 100,
+    txn_type: str = None,
+    month: int = None,
+    year: int = None,
+):
+    """All transactions for a merchant, filterable by type/month/year."""
+    from db import get_merchant_transactions
+
+    merchant = MERCHANT_CACHE.get(merchant_id)
+    if not merchant:
+        raise HTTPException(404, "Merchant not found")
+    txns = await get_merchant_transactions(merchant_id, limit, txn_type, month, year)
+    # Serialize dates to string
+    for t in txns:
+        if hasattr(t.get("txn_date"), "isoformat"):
+            t["txn_date"] = t["txn_date"].isoformat()
+        if hasattr(t.get("created_at"), "isoformat"):
+            t["created_at"] = t["created_at"].isoformat()
+    return txns
+
+
+@app.get("/merchants/{merchant_id}/monthly-summary")
+async def merchant_monthly_summary(merchant_id: str):
+    """Monthly credits/debits/net for charts."""
+    from db import get_merchant_monthly_summary
+
+    merchant = MERCHANT_CACHE.get(merchant_id)
+    if not merchant:
+        raise HTTPException(404, "Merchant not found")
+    return await get_merchant_monthly_summary(merchant_id)
+
+
+@app.get("/merchants/{merchant_id}/transaction-stats")
+async def merchant_transaction_stats(merchant_id: str):
+    """Aggregate stats: total txns, credits, debits, payment delay avg."""
+    from db import get_transaction_stats
+
+    merchant = MERCHANT_CACHE.get(merchant_id)
+    if not merchant:
+        raise HTTPException(404, "Merchant not found")
+    stats = await get_transaction_stats(merchant_id)
+    # Serialize decimals
+    return {k: float(v) if v is not None else None for k, v in stats.items()}
