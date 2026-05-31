@@ -24,8 +24,8 @@ def detect_segment(merchant: Dict) -> str:
 def get_segment_weights(segment: str) -> Dict[str, float]:
     weights = {
         "digital_native": {"social": 0.25, "psychometric": 0.20, "behavioral": 0.55},
-        "cash_dominant":  {"social": 0.35, "psychometric": 0.30, "behavioral": 0.35},
-        "new_merchant":   {"social": 0.45, "psychometric": 0.40, "behavioral": 0.15},
+        "cash_dominant": {"social": 0.35, "psychometric": 0.30, "behavioral": 0.35},
+        "new_merchant": {"social": 0.45, "psychometric": 0.40, "behavioral": 0.15},
     }
     return weights.get(segment, weights["new_merchant"])
 
@@ -46,15 +46,41 @@ def compute_confidence(
 def get_lending_tier(final_score: int, confidence: float) -> Dict:
     effective = final_score * confidence
     if effective >= 65:
-        return {"tier": "A", "label": "Full credit eligible", "max_loan_npr": 50000, "interest_rate": "12% per annum", "color": "green"}
+        return {
+            "tier": "A",
+            "label": "Full credit eligible",
+            "max_loan_npr": 50000,
+            "interest_rate": "12% per annum",
+            "color": "green",
+        }
     elif effective >= 45:
-        return {"tier": "B", "label": "Small loan eligible", "max_loan_npr": 15000, "interest_rate": "16% per annum", "color": "amber"}
+        return {
+            "tier": "B",
+            "label": "Small loan eligible",
+            "max_loan_npr": 15000,
+            "interest_rate": "16% per annum",
+            "color": "amber",
+        }
     elif effective >= 28:
-        return {"tier": "C", "label": "Building profile", "max_loan_npr": 0, "interest_rate": "N/A", "color": "orange"}
-    return {"tier": "D", "label": "Insufficient data", "max_loan_npr": 0, "interest_rate": "N/A", "color": "red"}
+        return {
+            "tier": "C",
+            "label": "Building profile",
+            "max_loan_npr": 0,
+            "interest_rate": "N/A",
+            "color": "orange",
+        }
+    return {
+        "tier": "D",
+        "label": "Insufficient data",
+        "max_loan_npr": 0,
+        "interest_rate": "N/A",
+        "color": "red",
+    }
 
 
-def generate_improvement_pathway(tier, social_score, psychometric_score, behavioral_score, behavioral_sub) -> list:
+def generate_improvement_pathway(
+    tier, social_score, psychometric_score, behavioral_score, behavioral_sub
+) -> list:
     steps = []
     if tier in ["C", "D"]:
         steps.append("Record at least 10 khata (ledger) entries via USSD *333#")

@@ -2,14 +2,14 @@
 PostgreSQL persistence layer for TrustBridge.
 Updated to support users + transactions schema.
 """
+
 import os
 import json
 import asyncpg
 from typing import Optional, List, Dict
 
 DATABASE_URL = os.environ.get(
-    "DATABASE_URL",
-    "postgresql://trustbridge:trustbridge@db:5432/trustbridge"
+    "DATABASE_URL", "postgresql://trustbridge:trustbridge@db:5432/trustbridge"
 )
 
 _pool: Optional[asyncpg.Pool] = None
@@ -135,7 +135,8 @@ async def seed_merchants(merchants: List[Dict]):
         for m in merchants:
             meta = m["business_metadata"]
             is_digital = meta.get("segment", "") == "Digital Native"
-            await conn.execute("""
+            await conn.execute(
+                """
                 INSERT INTO merchants
                     (merchant_id, owner_name, legal_name, location, business_type,
                      segment, months_active, digital_footprint, esewa_registered,
@@ -143,35 +144,58 @@ async def seed_merchants(merchants: List[Dict]):
                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
                 ON CONFLICT (merchant_id) DO NOTHING
             """,
-                m["merchant_id"], meta.get("owner_name",""), meta.get("legal_name",""),
-                meta.get("location",""), meta.get("business_type",""), meta.get("segment",""),
-                meta.get("months_active", 0), is_digital, is_digital, False, json.dumps(m)
+                m["merchant_id"],
+                meta.get("owner_name", ""),
+                meta.get("legal_name", ""),
+                meta.get("location", ""),
+                meta.get("business_type", ""),
+                meta.get("segment", ""),
+                meta.get("months_active", 0),
+                is_digital,
+                is_digital,
+                False,
+                json.dumps(m),
             )
         for m in merchants:
             mid = m["merchant_id"]
-            targets = m.get("layer_1_social_graph",{}).get("vouch_edges_to",[])
-            weight  = m["layer_1_social_graph"].get("vouch_metrics",{}).get("vouch_edge_weight",1.0)
+            targets = m.get("layer_1_social_graph", {}).get("vouch_edges_to", [])
+            weight = (
+                m["layer_1_social_graph"]
+                .get("vouch_metrics", {})
+                .get("vouch_edge_weight", 1.0)
+            )
             for target in targets:
                 try:
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         INSERT INTO vouch_edges (from_merchant_id, to_merchant_id, edge_weight)
                         VALUES ($1,$2,$3) ON CONFLICT DO NOTHING
-                    """, mid, target, weight)
+                    """,
+                        mid,
+                        target,
+                        weight,
+                    )
                 except Exception:
                     pass
-        final  = await conn.fetchval("SELECT COUNT(*) FROM merchants")
-        edges  = await conn.fetchval("SELECT COUNT(*) FROM vouch_edges")
+        final = await conn.fetchval("SELECT COUNT(*) FROM merchants")
+        edges = await conn.fetchval("SELECT COUNT(*) FROM vouch_edges")
         print(f"✅ Seeded {final} merchants and {edges} vouch edges")
 
 
 # ── Merchant CRUD ─────────────────────────────────────────────────────────────
+
 
 async def get_all_merchants() -> List[Dict]:
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
             SELECT merchant_id, owner_name, legal_name, location, business_type,
-                   segment, months_active, digital_footprint, esewa_registered, khalti_registered
+                   segment, months_active, digital_footprint, esewa_registered,
+                   khalti_registered,
+                   full_data->>'region'   as region,
+                   full_data->>'district' as district,
+                   full_data->>'risk_score' as risk_score,
+                   full_data->>'repayment_risk' as repayment_risk
             FROM merchants ORDER BY merchant_id
         """)
         return [dict(r) for r in rows]
@@ -194,6 +218,7 @@ async def get_all_merchants_full() -> List[Dict]:
 
 
 # ── Transaction queries ───────────────────────────────────────────────────────
+
 
 async def get_merchant_transactions(
     merchant_id: str,
@@ -226,7 +251,7 @@ async def get_merchant_transactions(
             FROM transactions t
             LEFT JOIN users u1 ON u1.user_id = t.from_user_id
             LEFT JOIN users u2 ON u2.user_id = t.to_user_id
-            WHERE {' AND '.join(where)}
+            WHERE {" AND ".join(where)}
             ORDER BY t.txn_date DESC
             LIMIT ${i}
         """
@@ -238,7 +263,8 @@ async def get_merchant_monthly_summary(merchant_id: str) -> List[Dict]:
     """Monthly credits, debits, net flow per merchant."""
     pool = await get_pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch("""
+        rows = await conn.fetch(
+            """
             SELECT
                 EXTRACT(YEAR  FROM txn_date)::int  AS year,
                 EXTRACT(MONTH FROM txn_date)::int  AS month,
@@ -249,11 +275,13 @@ async def get_merchant_monthly_summary(merchant_id: str) -> List[Dict]:
             WHERE from_user_id=$1 OR to_user_id=$1
             GROUP BY year, month
             ORDER BY year, month
-        """, merchant_id)
+        """,
+            merchant_id,
+        )
         result = []
         for r in rows:
             d = dict(r)
-            d["net"]      = float(d["credits"]) - float(d["debits"])
+            d["net"] = float(d["credits"]) - float(d["debits"])
             d["coverage"] = round(float(d["credits"]) / max(float(d["debits"]), 1), 3)
             result.append(d)
         return result
@@ -263,7 +291,8 @@ async def get_transaction_stats(merchant_id: str) -> Dict:
     """Aggregate stats used by behavioral engine."""
     pool = await get_pool()
     async with pool.acquire() as conn:
-        row = await conn.fetchrow("""
+        row = await conn.fetchrow(
+            """
             SELECT
                 COUNT(*)                                              AS total_txns,
                 SUM(CASE WHEN to_user_id=$1 THEN amount_npr END)     AS total_credits,
@@ -278,17 +307,21 @@ async def get_transaction_stats(merchant_id: str) -> Dict:
                       AND from_user_id=$1 THEN 1 END)                AS topup_count
             FROM transactions
             WHERE from_user_id=$1 OR to_user_id=$1
-        """, merchant_id)
+        """,
+            merchant_id,
+        )
         return dict(row) if row else {}
 
 
 # ── Score / psychometric persistence ─────────────────────────────────────────
 
+
 async def save_trust_score(merchant_id: str, result: Dict):
     pool = await get_pool()
     async with pool.acquire() as conn:
         lt = result.get("lending_tier", {})
-        await conn.execute("""
+        await conn.execute(
+            """
             INSERT INTO trust_scores
                 (merchant_id, final_score, confidence, segment,
                  social_score, psychometric_score, behavioral_score,
@@ -304,53 +337,69 @@ async def save_trust_score(merchant_id: str, result: Dict):
             result.get("sub_scores", {}).get("behavioral"),
             lt.get("tier"),
             result.get("fraud_flag", False),
-            json.dumps(result)
+            json.dumps(result),
         )
 
 
 async def save_psychometric(merchant_id: str, responses: Dict, result: Dict):
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute("""
+        await conn.execute(
+            """
             INSERT INTO psychometric_responses (merchant_id, responses, credit_personality)
             VALUES ($1,$2,$3)
-        """, merchant_id, json.dumps(responses), result.get("credit_personality",""))
+        """,
+            merchant_id,
+            json.dumps(responses),
+            result.get("credit_personality", ""),
+        )
 
 
 async def get_score_history(merchant_id: str, limit: int = 5) -> List[Dict]:
     pool = await get_pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch("""
+        rows = await conn.fetch(
+            """
             SELECT final_score, confidence, lending_tier, fraud_flag,
                    social_score, psychometric_score, behavioral_score,
                    full_result, scored_at
             FROM trust_scores
             WHERE merchant_id=$1
             ORDER BY scored_at DESC LIMIT $2
-        """, merchant_id, limit)
+        """,
+            merchant_id,
+            limit,
+        )
         return [dict(r) for r in rows]
 
 
 # ── Graph queries ─────────────────────────────────────────────────────────────
 
+
 async def get_vouch_neighbors(merchant_id: str) -> Dict:
     pool = await get_pool()
     async with pool.acquire() as conn:
-        vouched_by = await conn.fetch("""
+        vouched_by = await conn.fetch(
+            """
             SELECT ve.from_merchant_id as id, m.owner_name as name
             FROM vouch_edges ve
             JOIN merchants m ON m.merchant_id = ve.from_merchant_id
             WHERE ve.to_merchant_id=$1
-        """, merchant_id)
-        vouches_for = await conn.fetch("""
+        """,
+            merchant_id,
+        )
+        vouches_for = await conn.fetch(
+            """
             SELECT ve.to_merchant_id as id, m.owner_name as name
             FROM vouch_edges ve
             JOIN merchants m ON m.merchant_id = ve.to_merchant_id
             WHERE ve.from_merchant_id=$1
-        """, merchant_id)
+        """,
+            merchant_id,
+        )
         return {
             "merchant_id": merchant_id,
-            "vouched_by":  [dict(r) for r in vouched_by],
+            "vouched_by": [dict(r) for r in vouched_by],
             "vouches_for": [dict(r) for r in vouches_for],
         }
 
@@ -373,13 +422,23 @@ async def get_graph_data_for_d3() -> Dict:
             FROM merchants
         """)
         fraud_map = {r["merchant_id"]: r["fraud_flag"] for r in fraud_rows}
-        nodes = [{
-            "id": r["merchant_id"], "name": r["owner_name"],
-            "business_type": r["business_type"], "segment": r["segment"],
-            "location": r["location"], "fraud_flag": fraud_map.get(r["merchant_id"], False),
-        } for r in merchant_rows]
-        edges = [{
-            "source": r["from_merchant_id"], "target": r["to_merchant_id"],
-            "weight": float(r["edge_weight"]),
-        } for r in edge_rows]
+        nodes = [
+            {
+                "id": r["merchant_id"],
+                "name": r["owner_name"],
+                "business_type": r["business_type"],
+                "segment": r["segment"],
+                "location": r["location"],
+                "fraud_flag": fraud_map.get(r["merchant_id"], False),
+            }
+            for r in merchant_rows
+        ]
+        edges = [
+            {
+                "source": r["from_merchant_id"],
+                "target": r["to_merchant_id"],
+                "weight": float(r["edge_weight"]),
+            }
+            for r in edge_rows
+        ]
         return {"nodes": nodes, "edges": edges}

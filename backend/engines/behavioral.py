@@ -12,6 +12,10 @@ HARVEST_CALENDAR = {
 }
 
 
+def clamp(v, lo, hi):
+    return max(lo, min(hi, v))
+
+
 def score_transactional_consistency(revenue_history: List[Dict]) -> int:
     if not revenue_history:
         return 0
@@ -55,7 +59,6 @@ def score_cash_flow_seasonality(revenue_history: List[Dict], business_type: str)
     harvest_months = HARVEST_CALENDAR.get(business_type, list(range(1, 13)))
     expected_high = []
     actual_amounts = []
-
     for entry in revenue_history:
         try:
             month_num = datetime.strptime(entry["month"], "%Y-%m").month
@@ -63,10 +66,8 @@ def score_cash_flow_seasonality(revenue_history: List[Dict], business_type: str)
             continue
         expected_high.append(1 if month_num in harvest_months else 0)
         actual_amounts.append(entry["amount"])
-
     if not actual_amounts:
         return 50
-
     mean_amount = sum(actual_amounts) / len(actual_amounts)
     correct_peaks = sum(
         1 for i, amount in enumerate(actual_amounts)
@@ -89,27 +90,27 @@ def score_khata_repayment(khata_entries: List[Dict]) -> int:
 
 
 def compute_behavioral_score(merchant: Dict) -> Dict:
-    # New schema path
+
+    # ── Branch 1: 3-layer schema (USR-M-001 merchants) ───────────────────────
     if "layer_3_behavioral" in merchant:
         L3   = merchant["layer_3_behavioral"]
         fin  = L3["financial_telemetry_3mo"]
         prox = L3["proxy_features"]
 
-        avg_coverage  = sum(fin["coverage_ratio"]) / 3
+        avg_coverage = sum(fin["coverage_ratio"]) / 3
         tc  = round(min(avg_coverage * 80, 100))
 
-        nea    = prox["nea_bill_consecutive_on_time_months"]
-        water  = prox["water_bill_consecutive_on_time_months"]
-        ofs = round(min((nea + water) / 24 * 100, 100))
+        nea   = prox["nea_bill_consecutive_on_time_months"]
+        water = prox["water_bill_consecutive_on_time_months"]
+        ofs   = round(min((nea + water) / 24 * 100, 100))
 
         ats = round(prox["airtime_topup_regularity_index"] * 100)
 
         neg = fin["consecutive_negative_months"]
         css = round(max(100 - neg * 30, 0))
 
-        # Phase 4 fix: derive khata proxy from payment delay variance
         delay_variance = prox.get("days_to_payment_variance", 5.0)
-        raw_delays = prox.get("payment_delays_raw_3mo", [])
+        raw_delays     = prox.get("payment_delays_raw_3mo", [])
         if raw_delays:
             avg_delay = sum(raw_delays) / len(raw_delays)
             krs = round(max(100 - avg_delay * 8 - delay_variance * 3, 0))
@@ -133,10 +134,59 @@ def compute_behavioral_score(merchant: Dict) -> Dict:
                 "cash_flow_seasonality":     css,
                 "khata_repayment":           krs,
             },
-            "has_khata_data": False
+            "has_khata_data": False,
         }
 
-    # Old schema fallback
+    # ── Branch 2: flat schema (TB-2026-XXXX merchants) ───────────────────────
+    if "airtime_regularity" in merchant:
+        # Transactional consistency — recent 3 months vs overall average
+        credits = merchant.get("monthly_credits", [])
+        if len(credits) >= 3:
+            recent_avg  = sum(credits[-3:]) / 3
+            overall_avg = sum(credits) / len(credits)
+            tc = round(clamp(recent_avg / max(overall_avg, 1) * 80, 0, 100))
+        else:
+            tc = 40
+
+        # Obligation fulfillment — NEA + water payment rates
+        nea_rate   = merchant.get("nea_payment_rate", 0.5)
+        water_rate = merchant.get("water_payment_rate", -1)
+        nea_s      = round(clamp(nea_rate * 100, 0, 100))
+        water_s    = round(clamp(water_rate * 100, 0, 100)) if water_rate >= 0 else nea_s
+        ofs        = round((nea_s + water_s) / 2)
+
+        # Airtime consistency
+        ats = round(clamp(merchant.get("airtime_regularity", 0.5) * 100, 0, 100))
+
+        # Cash flow seasonality — utility score already computed in data
+        css = round(clamp(merchant.get("utility_score", 0.5) * 100, 0, 100))
+
+        # Khata repayment
+        khata_raw = merchant.get("khata_repay_rate", -1)
+        krs       = round(clamp(merchant.get("khata_score", 0.5) * 100, 0, 100)) if khata_raw >= 0 else 50
+        has_khata = merchant.get("uses_khata", 0) == 1
+
+        behavioral_score = round(
+            tc  * 0.30 +
+            ofs * 0.28 +
+            ats * 0.18 +
+            css * 0.12 +
+            krs * 0.12
+        )
+
+        return {
+            "behavioral_score": behavioral_score,
+            "sub_scores": {
+                "transactional_consistency": tc,
+                "obligation_fulfillment":    ofs,
+                "airtime_consistency":       ats,
+                "cash_flow_seasonality":     css,
+                "khata_repayment":           krs,
+            },
+            "has_khata_data": has_khata,
+        }
+
+    # ── Branch 3: old flat schema fallback ───────────────────────────────────
     tc  = score_transactional_consistency(merchant.get("revenue_history", []))
     ofs = score_obligation_fulfillment(merchant.get("utility_payments", []))
     ats = score_airtime_consistency(merchant.get("airtime_topups", []))
@@ -163,5 +213,5 @@ def compute_behavioral_score(merchant: Dict) -> Dict:
             "cash_flow_seasonality":     css,
             "khata_repayment":           krs,
         },
-        "has_khata_data": has_khata
+        "has_khata_data": has_khata,
     }
