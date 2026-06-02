@@ -1,5 +1,151 @@
-import { useState } from "react";
-import { Brain, Globe } from "lucide-react";
+import { useState, useRef } from "react";
+import { Brain, Globe, Volume2, VolumeX, Loader } from "lucide-react";
+
+// ─── ElevenLabs TTS config ────────────────────────────────────────────────────
+const ELEVENLABS_API_KEY = import.meta.env.VITE_ELEVENLABS_API_KEY || "";
+const ELEVENLABS_VOICE_ID = "yoZ06aMxZJJ28mfd3POQ"; // "Bella" — good for Nepali/English
+
+async function speakText(text) {
+  if (!ELEVENLABS_API_KEY) {
+    console.warn(
+      "No ElevenLabs API key found. Set VITE_ELEVENLABS_API_KEY in your .env",
+    );
+    return null;
+  }
+
+  const response = await fetch(
+    `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "xi-api-key": ELEVENLABS_API_KEY,
+      },
+      body: JSON.stringify({
+        text,
+        model_id: "eleven_turbo_v2_5",
+        voice_settings: {
+          stability: 0.7,
+          similarity_boost: 0.75,
+        },
+      }),
+    },
+  );
+
+  if (!response.ok) {
+    console.error("ElevenLabs TTS error:", response.status);
+    return null;
+  }
+
+  const audioBlob = await response.blob();
+  return URL.createObjectURL(audioBlob);
+}
+
+// ─── Play Question + All Options sequentially ─────────────────────────────────
+function PlayQuestionButton({ question, options, lang }) {
+  const [status, setStatus] = useState("idle"); // idle | loading | playing
+  const stopRef = useRef(false);
+  const audioRef = useRef(null);
+
+  const handleClick = async () => {
+    // If playing, stop immediately
+    if (status === "playing" || status === "loading") {
+      stopRef.current = true;
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+      setStatus("idle");
+      return;
+    }
+
+    // Build sequence: question first, then each option prefixed with its key
+    const optionEntries = Object.entries(options || {});
+    const texts = [
+      question,
+      ...optionEntries.map(([key, text]) => `${key}. ${text}`),
+    ];
+
+    stopRef.current = false;
+    setStatus("loading");
+
+    for (const text of texts) {
+      if (stopRef.current) break;
+
+      const url = await speakText(text);
+      if (!url || stopRef.current) {
+        if (url) URL.revokeObjectURL(url);
+        break;
+      }
+
+      setStatus("playing");
+
+      await new Promise((resolve) => {
+        const audio = new Audio(url);
+        audioRef.current = audio;
+        audio.play();
+        audio.onended = () => {
+          URL.revokeObjectURL(url);
+          audioRef.current = null;
+          resolve();
+        };
+        audio.onerror = () => {
+          URL.revokeObjectURL(url);
+          audioRef.current = null;
+          resolve();
+        };
+      });
+    }
+
+    if (!stopRef.current) setStatus("idle");
+  };
+
+  const isActive = status === "playing" || status === "loading";
+
+  return (
+    <button
+      onClick={handleClick}
+      title={isActive ? "Stop audio" : "Listen to question & all options"}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 5,
+        padding: "4px 10px",
+        borderRadius: 20,
+        border: `1px solid ${isActive ? "var(--accent)" : "var(--border)"}`,
+        background: isActive ? "rgba(0,212,170,0.12)" : "transparent",
+        cursor: "pointer",
+        color: isActive ? "var(--accent)" : "var(--text-muted)",
+        fontSize: 11,
+        fontFamily: "var(--font-mono)",
+        transition: "all 0.15s",
+        flexShrink: 0,
+        whiteSpace: "nowrap",
+      }}
+    >
+      {status === "loading" ? (
+        <Loader size={11} style={{ animation: "spin 1s linear infinite" }} />
+      ) : status === "playing" ? (
+        <VolumeX size={11} />
+      ) : (
+        <Volume2 size={11} />
+      )}
+      {status === "loading"
+        ? lang === "ne"
+          ? "लोड…"
+          : "Loading…"
+        : status === "playing"
+          ? lang === "ne"
+            ? "रोक्नुस्"
+            : "Stop"
+          : lang === "ne"
+            ? "सुन्नुस्"
+            : "Listen"}
+    </button>
+  );
+}
+
+// ─── Trait config ─────────────────────────────────────────────────────────────
 
 const TRAIT_COLORS = {
   risk_aversion: "#4d9ef7",
@@ -24,6 +170,8 @@ const TRAIT_LABELS_EN = {
   resilience: "Resilience",
   planning: "Planning",
 };
+
+// ─── Main component ───────────────────────────────────────────────────────────
 
 export function PsychometricTab({ questions, onSubmit, submitted }) {
   const [responses, setResponses] = useState({});
@@ -108,51 +256,58 @@ export function PsychometricTab({ questions, onSubmit, submitted }) {
 
         return (
           <div key={q.id} className="card" style={{ marginBottom: 12 }}>
+            {/* Trait badge row */}
             <div
               style={{
                 display: "flex",
                 alignItems: "center",
-                gap: 8,
+                justifyContent: "space-between",
                 marginBottom: 10,
               }}
             >
-              <span
-                style={{
-                  width: 22,
-                  height: 22,
-                  borderRadius: "50%",
-                  background: `${color}22`,
-                  border: `1px solid ${color}44`,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  fontSize: 11,
-                  fontWeight: 700,
-                  fontFamily: "var(--font-mono)",
-                  color,
-                }}
-              >
-                {i + 1}
-              </span>
-              <span
-                className="badge"
-                style={{
-                  background: `${color}18`,
-                  color,
-                  borderColor: `${color}30`,
-                }}
-              >
-                {traitLabel(q.trait)}
-              </span>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span
+                  style={{
+                    width: 22,
+                    height: 22,
+                    borderRadius: "50%",
+                    background: `${color}22`,
+                    border: `1px solid ${color}44`,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontSize: 11,
+                    fontWeight: 700,
+                    fontFamily: "var(--font-mono)",
+                    color,
+                  }}
+                >
+                  {i + 1}
+                </span>
+                <span
+                  className="badge"
+                  style={{
+                    background: `${color}18`,
+                    color,
+                    borderColor: `${color}30`,
+                  }}
+                >
+                  {traitLabel(q.trait)}
+                </span>
+              </div>
+
+              {/* Single listen button for question + all options */}
+              <PlayQuestionButton question={qText} options={opts} lang={lang} />
             </div>
 
+            {/* Question text */}
             <p
               style={{
                 fontSize: 14,
                 fontWeight: 500,
                 color: "var(--text)",
                 lineHeight: 1.6,
-                marginBottom: 14,
+                margin: "0 0 14px 0",
                 fontFamily:
                   lang === "ne"
                     ? "'Noto Sans Devanagari', var(--font-body)"
@@ -162,26 +317,28 @@ export function PsychometricTab({ questions, onSubmit, submitted }) {
               {qText}
             </p>
 
+            {/* Answer options */}
             {Object.entries(opts || {}).map(([key, text]) => (
-              <div
-                key={key}
-                className={`radio-option ${selected === key ? "selected" : ""}`}
-                onClick={() => handleSelect(q.id, key)}
-              >
-                <div className="radio-dot" />
-                <span className="radio-key">{key}</span>
-                <span
-                  style={{
-                    fontSize: 13,
-                    color: "var(--text)",
-                    fontFamily:
-                      lang === "ne"
-                        ? "'Noto Sans Devanagari', var(--font-body)"
-                        : "var(--font-body)",
-                  }}
+              <div key={key} style={{ marginBottom: 4 }}>
+                <div
+                  className={`radio-option ${selected === key ? "selected" : ""}`}
+                  onClick={() => handleSelect(q.id, key)}
                 >
-                  {text}
-                </span>
+                  <div className="radio-dot" />
+                  <span className="radio-key">{key}</span>
+                  <span
+                    style={{
+                      fontSize: 13,
+                      color: "var(--text)",
+                      fontFamily:
+                        lang === "ne"
+                          ? "'Noto Sans Devanagari', var(--font-body)"
+                          : "var(--font-body)",
+                    }}
+                  >
+                    {text}
+                  </span>
+                </div>
               </div>
             ))}
           </div>
@@ -231,7 +388,7 @@ export function PsychometricTab({ questions, onSubmit, submitted }) {
           <GamificationPanel result={showResult} lang={lang} />
         )}
 
-      {/* Hallucination correction notice (dev/transparency) */}
+      {/* Hallucination correction notice */}
       {showResult?.hallucination_corrections?.length > 0 && (
         <div
           style={{
@@ -314,7 +471,6 @@ function GamificationPanel({ result, lang }) {
           </div>
         </div>
 
-        {/* XP pill */}
         <div
           style={{
             background: "rgba(0,212,170,0.12)",
@@ -331,7 +487,6 @@ function GamificationPanel({ result, lang }) {
         </div>
       </div>
 
-      {/* XP progress bar (out of 200 max) */}
       <div style={{ marginBottom: 16 }}>
         <div
           style={{
@@ -365,7 +520,6 @@ function GamificationPanel({ result, lang }) {
         </div>
       </div>
 
-      {/* Badges */}
       {badges_unlocked?.length > 0 && (
         <div>
           <div
@@ -388,7 +542,6 @@ function GamificationPanel({ result, lang }) {
         </div>
       )}
 
-      {/* Credit personality highlight */}
       {result.credit_personality && (
         <div
           style={{
@@ -482,7 +635,6 @@ function BadgeCard({ badge, lang }) {
         </div>
       </div>
 
-      {/* Tooltip */}
       {hover && (
         <div
           style={{
