@@ -1,3 +1,8 @@
+# Demo video
+
+https://github.com/user-attachments/assets/0154714e-5231-44a4-8f54-e583bdd18511
+
+
 # TrustBridge
 
 Alternative trust middleware for unbanked merchants in Nepal.
